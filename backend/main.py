@@ -460,7 +460,8 @@ async def models(username: str = Depends(require_auth)) -> dict:
 async def chat(
     req: ChatRequest, username: str = Depends(require_auth)
 ) -> StreamingResponse:
-    if await _cf_access_token(username):
+    has_images = any(m.images for m in req.messages)
+    if not has_images and await _cf_access_token(username):
         return await _chat_workers_ai(req, username)
     return _chat_ollama(req)
 
