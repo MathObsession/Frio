@@ -53,13 +53,11 @@ CF_OAUTH_TOKEN_URL = os.getenv(
 )
 CF_API_BASE = "https://api.cloudflare.com/client/v4"
 
-# Frontend model ids (Sidebar MODELS) -> Workers AI model ids. Overridable.
+# Frontend model ids (Sidebar MODELS) -> Workers AI / AI Gateway model ids.
 CF_MODEL_MAP = {
-    "gemma4:31b-cloud": os.getenv("CF_MODEL_LITE", "@cf/meta/llama-3.1-8b-instruct"),
-    "nemotron-3-super:cloud": os.getenv(
-        "CF_MODEL_PRO", "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
-    ),
-    "minimax-m3:cloud": os.getenv("CF_MODEL_MAX", "@cf/qwen/qwen3-32b-instruct"),
+    "gemma4:31b-cloud": os.getenv("CF_MODEL_LITE", "openai/gpt-5-nano"),
+    "nemotron-3-super:cloud": os.getenv("CF_MODEL_PRO", "openai/o3-mini"),
+    "minimax-m3:cloud": os.getenv("CF_MODEL_MAX", "openai/gpt-5"),
 }
 CF_MODEL_DEFAULT = CF_MODEL_MAP.get("nemotron-3-super:cloud")
 
