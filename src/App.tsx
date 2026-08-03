@@ -152,6 +152,7 @@ export default function App() {
   }, [conversations, authState]);
 
   useEffect(() => {
+    if (authState !== 'authed') return;
     let cancelled = false;
     const check = async () => {
       try {
@@ -172,7 +173,7 @@ export default function App() {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, []);
+  }, [authState]);
 
   const activeConversation = conversations.find((c) => c.id === activeId) ?? null;
 

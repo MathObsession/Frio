@@ -40,7 +40,11 @@ else:
 CF_OAUTH_CLIENT_ID = os.getenv("CF_OAUTH_CLIENT_ID", "")
 CF_OAUTH_CLIENT_SECRET = os.getenv("CF_OAUTH_CLIENT_SECRET", "")
 CF_OAUTH_REDIRECT_URI = os.getenv("CF_OAUTH_REDIRECT_URI", "")
-CF_OAUTH_SCOPES = os.getenv("CF_OAUTH_SCOPES", "workers-ai.run account.read user.read")
+# Must be a subset of the scopes configured on the OAuth client.
+CF_OAUTH_SCOPES = os.getenv("CF_OAUTH_SCOPES", "account.read user.read ai.read")
+# Optional fallback for the account that hosts Workers AI (only needed when the
+# client lacks account.read).
+CF_ACCOUNT_ID = os.getenv("CF_ACCOUNT_ID", "")
 CF_OAUTH_AUTH_URL = os.getenv(
     "CF_OAUTH_AUTH_URL", "https://dash.cloudflare.com/oauth2/auth"
 )
@@ -206,6 +210,8 @@ async def cf_callback(request: Request) -> RedirectResponse:
                 result = (acc.json().get("result") or [])
                 if result:
                     account_id = result[0].get("id")
+            if not account_id:
+                account_id = CF_ACCOUNT_ID or None
 
         if email:
             username = email
