@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import secrets
@@ -102,6 +103,7 @@ class ChatRequest(BaseModel):
     model: str
     messages: list[ChatMessage]
     think: bool = False
+    search: bool = True
     options: dict[str, Any] | None = None
 
 
@@ -327,24 +329,180 @@ def _to_openai_messages(messages: list[ChatMessage]) -> list[dict]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Web search (DuckDuckGo) — the model decides whether a query needs it
+# ---------------------------------------------------------------------------
+
+SEARCH_CLASSIFIER_MODEL = os.getenv("CF_SEARCH_MODEL", "@cf/meta/llama-3.1-8b-instruct")
+SEARCH_CLASSIFIER_PROMPT = (
+    "You are a decision engine. Given a user message, decide whether answering it "
+    "requires a live web search for up-to-date information (current events, news, live "
+    "prices, weather, sports scores, recent releases, facts that change over time). "
+    "If general knowledge is enough, do not search.\n"
+    'Respond ONLY with a single JSON object, no markdown and no code fences: '
+    '{"search": true, "query": "the most effective search query"} or '
+    '{"search": false, "query": ""}\n\n'
+    "User message: {text}"
+)
+
+
+def _extract_json(text: str) -> Any:
+    if not text:
+        return None
+    text = text.strip()
+    if text.startswith("```"):
+        first = text.find("\n")
+        if first >= 0:
+            text = text[first + 1 :]
+        text = text.rsplit("```", 1)[0].strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        return json.loads(text[start : end + 1])
+    except Exception:
+        return None
+
+
+def _search_decision(content: str, fallback_query: str) -> tuple[bool, str]:
+    obj = _extract_json(content)
+    if not isinstance(obj, dict):
+        return False, ""
+    search = obj.get("search") in (True, "true", "True", "yes", "1")
+    query = str(obj.get("query") or "").strip()[:300]
+    return search, query or fallback_query[:300]
+
+
+async def _cf_classify_search(access: str, account_id: str, text: str) -> tuple[bool, str]:
+    url = f"{CF_API_BASE}/accounts/{account_id}/ai/v1/chat/completions"
+    payload = {
+        "model": SEARCH_CLASSIFIER_MODEL,
+        "messages": [
+            {"role": "user", "content": SEARCH_CLASSIFIER_PROMPT.format(text=text[:2000])}
+        ],
+        "stream": False,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            res = await client.post(
+                url, json=payload, headers={"Authorization": f"Bearer {access}"}
+            )
+            if res.status_code != 200:
+                return False, ""
+            data = res.json()
+        content = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+        return _search_decision(content, text)
+    except Exception:
+        return False, ""
+
+
+async def _ollama_classify_search(model: str, text: str) -> tuple[bool, str]:
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "user", "content": SEARCH_CLASSIFIER_PROMPT.format(text=text[:2000])}
+        ],
+        "stream": False,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=60, headers=ollama_headers()) as client:
+            res = await client.post(f"{OLLAMA_URL}/api/chat", json=payload)
+            if res.status_code != 200:
+                return False, ""
+            data = res.json()
+        content = (data.get("message") or {}).get("content") or ""
+        return _search_decision(content, text)
+    except Exception:
+        return False, ""
+
+
+async def _classify_search(req: ChatRequest, username: str, text: str) -> tuple[bool, str]:
+    access = await _cf_access_token(username)
+    account_id = _cf_grants.get(username, {}).get("account_id") if access else None
+    if access and account_id:
+        return await _cf_classify_search(access, account_id, text)
+    return await _ollama_classify_search(resolve_model(req.model), text)
+
+
+def _ddg_search(query: str, max_results: int = 5) -> list[dict]:
+    try:
+        from ddgs import DDGS
+
+        results = DDGS().text(query, max_results=max_results)
+    except Exception:
+        return []
+    out: list[dict] = []
+    for r in results or []:
+        title = str(r.get("title") or "").strip()
+        url = str(r.get("href") or "").strip()
+        snippet = str(r.get("body") or "").strip()
+        if title and url:
+            out.append({"title": title, "url": url, "snippet": snippet[:300]})
+    return out
+
+
+async def _maybe_web_search(req: ChatRequest, username: str) -> tuple[str | None, list[dict]]:
+    if not req.search or any(m.images for m in req.messages):
+        return None, []
+    last_user = next((m.content for m in reversed(req.messages) if m.role == "user"), "")
+    if not last_user:
+        return None, []
+    try:
+        needs, query = await _classify_search(req, username, last_user)
+    except Exception:
+        return None, []
+    if not needs or not query:
+        return None, []
+    try:
+        results = await asyncio.to_thread(_ddg_search, query)
+    except Exception:
+        return None, []
+    if not results:
+        return None, []
+    lines = [
+        "Web search results for the user's question. Use them to answer accurately, "
+        "citing sources inline as markdown links like [1](https://example.com). "
+        "If the results do not contain the answer, say so rather than guessing.",
+        "",
+    ]
+    for i, r in enumerate(results, 1):
+        lines.append(f"[{i}] {r['title']}")
+        lines.append(r["url"])
+        if r["snippet"]:
+            lines.append(r["snippet"])
+        lines.append("")
+    return "\n".join(lines), results
+
+
 def sse(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
-async def _chat_workers_ai(req: ChatRequest, username: str) -> StreamingResponse:
+async def _chat_workers_ai(
+    req: ChatRequest,
+    username: str,
+    search_context: str | None = None,
+    sources: list[dict] | None = None,
+) -> StreamingResponse:
     grant = _cf_grants.get(username)
     account_id = grant["account_id"]
     access = grant["access_token"]
     model = CF_MODEL_MAP.get(req.model) or CF_MODEL_DEFAULT
+    messages = _to_openai_messages(req.messages)
+    if search_context:
+        messages = [{"role": "system", "content": search_context}] + messages
     payload = {
         "model": model,
-        "messages": _to_openai_messages(req.messages),
+        "messages": messages,
         "stream": True,
     }
     url = f"{CF_API_BASE}/accounts/{account_id}/ai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {access}", "Content-Type": "application/json"}
 
     async def event_stream():
+        if sources:
+            yield sse({"sources": sources})
         async with httpx.AsyncClient(timeout=None, headers=headers) as client:
             async with client.stream("POST", url, json=payload) as upstream:
                 if upstream.status_code != 200:
@@ -357,8 +515,6 @@ async def _chat_workers_ai(req: ChatRequest, username: str) -> StreamingResponse
                     line = line.strip()
                     if not line:
                         continue
-                    if req.think:
-                        print(f"[cf-stream {model}] {line[:600]}", flush=True)
                     if line.startswith("data:"):
                         line = line[5:].strip()
                     if line == "[DONE]":
@@ -388,10 +544,17 @@ async def _chat_workers_ai(req: ChatRequest, username: str) -> StreamingResponse
     )
 
 
-def _chat_ollama(req: ChatRequest) -> StreamingResponse:
+def _chat_ollama(
+    req: ChatRequest,
+    search_context: str | None = None,
+    sources: list[dict] | None = None,
+) -> StreamingResponse:
+    messages = [m.model_dump(exclude_none=True) for m in req.messages]
+    if search_context:
+        messages = [{"role": "system", "content": search_context}] + messages
     payload = {
         "model": resolve_model(req.model),
-        "messages": [m.model_dump(exclude_none=True) for m in req.messages],
+        "messages": messages,
         "stream": True,
         "think": req.think,
         "keep_alive": "30m",
@@ -400,6 +563,8 @@ def _chat_ollama(req: ChatRequest) -> StreamingResponse:
         payload["options"] = req.options
 
     async def event_stream():
+        if sources:
+            yield sse({"sources": sources})
         async with httpx.AsyncClient(timeout=None, headers=ollama_headers()) as client:
             async with client.stream(
                 "POST", f"{OLLAMA_URL}/api/chat", json=payload
@@ -477,9 +642,10 @@ async def chat(
     req: ChatRequest, username: str = Depends(require_auth)
 ) -> StreamingResponse:
     has_images = any(m.images for m in req.messages)
+    search_context, sources = await _maybe_web_search(req, username)
     if not has_images and await _cf_access_token(username):
-        return await _chat_workers_ai(req, username)
-    return _chat_ollama(req)
+        return await _chat_workers_ai(req, username, search_context, sources)
+    return _chat_ollama(req, search_context, sources)
 
 
 DIST_DIR = Path(__file__).resolve().parent.parent / "dist"

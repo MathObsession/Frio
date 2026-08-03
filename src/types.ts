@@ -12,6 +12,12 @@ export interface Attachment {
   textContent?: string;
 }
 
+export interface ChatSource {
+  title: string;
+  url: string;
+  snippet?: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -25,6 +31,8 @@ export interface ChatMessage {
   responses?: string[];
   /** backend that produced this message: Cloudflare Workers AI or Ollama */
   provider?: 'cloudflare' | 'ollama';
+  /** web search results used to answer this message */
+  sources?: ChatSource[];
   createdAt: number;
   error?: boolean;
   streaming?: boolean;

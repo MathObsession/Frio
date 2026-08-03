@@ -1,4 +1,4 @@
-import type { ChatMessage, ModelInfo } from '../types';
+import type { ChatMessage, ChatSource, ModelInfo } from '../types';
 import { authHeaders } from './auth';
 
 export const API_BASE: string =
@@ -27,6 +27,7 @@ export interface StreamChatOptions {
   onDelta: (text: string) => void;
   onDone: (fullText: string, provider?: 'cloudflare' | 'ollama') => void;
   onThinking?: (text: string) => void;
+  onSources?: (sources: ChatSource[]) => void;
 }
 
 function toOllamaMessages(messages: ChatMessage[]): OllamaMessage[] {
@@ -51,6 +52,7 @@ export async function streamChat({
   onDelta,
   onDone,
   onThinking,
+  onSources,
 }: StreamChatOptions): Promise<void> {
   const payload = {
     model,
@@ -103,6 +105,7 @@ export async function streamChat({
       let chunk: {
         content?: string;
         thinking?: string;
+        sources?: ChatSource[];
         done?: boolean;
         error?: string;
         provider?: 'cloudflare' | 'ollama';
@@ -114,6 +117,9 @@ export async function streamChat({
       }
       if (chunk.error) throw new Error(chunk.error);
       if (chunk.provider) provider = chunk.provider;
+      if (chunk.sources && onSources) {
+        onSources(chunk.sources);
+      }
       if (chunk.thinking && onThinking) {
         onThinking(chunk.thinking);
       }
