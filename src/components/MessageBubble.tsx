@@ -169,23 +169,6 @@ export function MessageBubble({
                   </div>
                 ) : null}
                 <Markdown content={message.content} />
-                {message.sources && message.sources.length > 0 && (
-                  <div className="msg-sources">
-                    <span className="msg-sources-title">Sources</span>
-                    {message.sources.map((s, i) => (
-                      <a
-                        key={`${s.url}-${i}`}
-                        className="msg-sources-link"
-                        href={s.url}
-                        target="_blank"
-                        rel="noreferrer noopener"
-                        title={s.snippet}
-                      >
-                        {s.title}
-                      </a>
-                    ))}
-                  </div>
-                )}
                 {message.streaming && <span className="cursor" />}
               </>
             ) : (

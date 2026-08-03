@@ -211,20 +211,6 @@ export default function App() {
               ),
             );
           },
-          onSources: (src) => {
-            setConversations((prev) =>
-              prev.map((c) =>
-                c.id === convId
-                  ? {
-                      ...c,
-                      messages: c.messages.map((m) =>
-                        m.id === assistantId ? { ...m, sources: src } : m,
-                      ),
-                    }
-                  : c,
-              ),
-            );
-          },
           onDelta: (piece) => {
             setConversations((prev) =>
               prev.map((c) =>

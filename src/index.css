@@ -1084,34 +1084,6 @@ audio.msg-audio {
   padding: 0 12px 12px;
 }
 
-.msg-sources {
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.msg-sources-title {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-muted);
-}
-
-.msg-sources-link {
-  font-size: 13px;
-  color: var(--accent);
-  text-decoration: none;
-  overflow-wrap: anywhere;
-}
-
-.msg-sources-link:hover {
-  text-decoration: underline;
-}
-
 /* ---------- Markdown ---------- */
 .md {
   font-size: 18.5px;
