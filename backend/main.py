@@ -357,6 +357,8 @@ async def _chat_workers_ai(req: ChatRequest, username: str) -> StreamingResponse
                     line = line.strip()
                     if not line:
                         continue
+                    if req.think:
+                        print(f"[cf-stream {model}] {line[:600]}", flush=True)
                     if line.startswith("data:"):
                         line = line[5:].strip()
                     if line == "[DONE]":
