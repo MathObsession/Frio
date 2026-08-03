@@ -55,9 +55,11 @@ CF_API_BASE = "https://api.cloudflare.com/client/v4"
 
 # Frontend model ids (Sidebar MODELS) -> Workers AI / AI Gateway model ids.
 CF_MODEL_MAP = {
-    "gemma4:31b-cloud": os.getenv("CF_MODEL_LITE", "openai/gpt-5-nano"),
-    "nemotron-3-super:cloud": os.getenv("CF_MODEL_PRO", "openai/o3-mini"),
-    "minimax-m3:cloud": os.getenv("CF_MODEL_MAX", "openai/gpt-5"),
+    "gemma4:31b-cloud": os.getenv("CF_MODEL_LITE", "@cf/openai/gpt-oss-20b"),
+    "nemotron-3-super:cloud": os.getenv(
+        "CF_MODEL_PRO", "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b"
+    ),
+    "minimax-m3:cloud": os.getenv("CF_MODEL_MAX", "@cf/nvidia/nemotron-3-120b-a12b"),
 }
 CF_MODEL_DEFAULT = CF_MODEL_MAP.get("nemotron-3-super:cloud")
 
