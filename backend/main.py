@@ -333,7 +333,7 @@ def _to_openai_messages(messages: list[ChatMessage]) -> list[dict]:
 # Web search (DuckDuckGo) — the model decides whether a query needs it
 # ---------------------------------------------------------------------------
 
-SEARCH_CLASSIFIER_MODEL = os.getenv("CF_SEARCH_MODEL", "@cf/meta/llama-3.1-8b-instruct")
+SEARCH_CLASSIFIER_MODEL = os.getenv("CF_SEARCH_MODEL", "gemma4:31b-cloud")
 SEARCH_CLASSIFIER_PROMPT = (
     "You are a decision engine. Given a user message, decide whether answering it "
     "requires a live web search for up-to-date information (current events, news, live "
@@ -376,12 +376,15 @@ def _search_decision(content: str, fallback_query: str) -> tuple[bool, str]:
 
 async def _cf_classify_search(access: str, account_id: str, text: str) -> tuple[bool, str]:
     url = f"{CF_API_BASE}/accounts/{account_id}/ai/v1/chat/completions"
+    model = CF_MODEL_MAP.get(SEARCH_CLASSIFIER_MODEL) or SEARCH_CLASSIFIER_MODEL
     payload = {
-        "model": SEARCH_CLASSIFIER_MODEL,
+        "model": model,
         "messages": [
             {"role": "user", "content": SEARCH_CLASSIFIER_PROMPT.format(text=text[:2000])}
         ],
         "stream": False,
+        "temperature": 0,
+        "max_tokens": 512,
     }
     try:
         async with httpx.AsyncClient(timeout=30) as client:
@@ -404,6 +407,7 @@ async def _ollama_classify_search(model: str, text: str) -> tuple[bool, str]:
             {"role": "user", "content": SEARCH_CLASSIFIER_PROMPT.format(text=text[:2000])}
         ],
         "stream": False,
+        "options": {"temperature": 0},
     }
     try:
         async with httpx.AsyncClient(timeout=60, headers=ollama_headers()) as client:
@@ -417,12 +421,12 @@ async def _ollama_classify_search(model: str, text: str) -> tuple[bool, str]:
         return False, ""
 
 
-async def _classify_search(req: ChatRequest, username: str, text: str) -> tuple[bool, str]:
+async def _classify_search(username: str, text: str) -> tuple[bool, str]:
     access = await _cf_access_token(username)
     account_id = _cf_grants.get(username, {}).get("account_id") if access else None
     if access and account_id:
         return await _cf_classify_search(access, account_id, text)
-    return await _ollama_classify_search(resolve_model(req.model), text)
+    return await _ollama_classify_search(resolve_model(SEARCH_CLASSIFIER_MODEL), text)
 
 
 def _ddg_search(query: str, max_results: int = 5) -> list[dict]:
@@ -449,7 +453,7 @@ async def _maybe_web_search(req: ChatRequest, username: str) -> tuple[str | None
     if not last_user:
         return None, []
     try:
-        needs, query = await _classify_search(req, username, last_user)
+        needs, query = await _classify_search(username, last_user)
     except Exception:
         return None, []
     if not needs or not query:
