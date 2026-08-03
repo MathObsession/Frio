@@ -200,9 +200,6 @@ export function Composer({
           )}
         </div>
       </div>
-      <div className="composer-hint">
-        Frio runs on Ollama. Images, audio and files can be attached.
-      </div>
     </div>
   );
 }
