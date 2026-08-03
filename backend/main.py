@@ -296,6 +296,23 @@ async def _cf_access_token(username: str) -> str | None:
         return None
 
 
+def _delta_reasoning(delta: dict) -> str:
+    parts: list[str] = []
+    rc = delta.get("reasoning_content")
+    if isinstance(rc, str):
+        parts.append(rc)
+    r = delta.get("reasoning")
+    if isinstance(r, str):
+        parts.append(r)
+    elif isinstance(r, list):
+        for item in r:
+            if isinstance(item, dict):
+                t = item.get("text") or item.get("content")
+                if isinstance(t, str):
+                    parts.append(t)
+    return "".join(parts)
+
+
 def _to_openai_messages(messages: list[ChatMessage]) -> list[dict]:
     out: list[dict] = []
     for m in messages:
@@ -354,6 +371,9 @@ async def _chat_workers_ai(req: ChatRequest, username: str) -> StreamingResponse
                     text = delta.get("content") or (choice.get("message") or {}).get("content")
                     if text:
                         yield sse({"content": text})
+                    reasoning = _delta_reasoning(delta)
+                    if reasoning and req.think:
+                        yield sse({"thinking": reasoning})
                     if chunk.get("done") or choice.get("finish_reason") or chunk.get("stop_reason"):
                         yield sse({"done": True, "provider": "cloudflare"})
                         return
