@@ -1,6 +1,6 @@
 import { Logo } from './Logo';
 
-export function Landing({ onOAuth }: { onOAuth: () => void }) {
+export function Landing({ onOAuth, error }: { onOAuth: () => void; error?: string | null }) {
   return (
     <div className="landing">
       <div className="landing-inner">
@@ -27,6 +27,7 @@ export function Landing({ onOAuth }: { onOAuth: () => void }) {
             Continue with Cloudflare
           </button>
         </div>
+        {error && <p className="landing-error">Sign-in failed: {error}</p>}
       </div>
     </div>
   );

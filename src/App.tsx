@@ -55,6 +55,7 @@ function findLastUserIndex(messages: ChatMessage[]): number {
 
 export default function App() {
   const [authState, setAuthState] = useState<'loading' | 'authed' | 'guest'>('loading');
+  const [oauthError, setOauthError] = useState<string | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [model, setModel] = useState<string>(DEFAULT_MODEL);
@@ -87,9 +88,12 @@ export default function App() {
       return;
     }
     if (oauth === 'error') {
+      const reason = params.get('e') || 'authorization failed';
       const url = new URL(window.location.href);
       url.searchParams.delete('oauth');
+      url.searchParams.delete('e');
       window.history.replaceState({}, '', url.toString());
+      setOauthError(reason);
       setAuthState('guest');
       return;
     }
@@ -499,7 +503,7 @@ export default function App() {
   }
 
   if (authState === 'guest') {
-    return <Landing onOAuth={startCloudflareOAuth} />;
+    return <Landing onOAuth={startCloudflareOAuth} error={oauthError} />;
   }
 
   return (

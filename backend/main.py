@@ -7,7 +7,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel
@@ -159,9 +159,19 @@ async def cf_authorize() -> RedirectResponse:
 
 
 @app.get("/api/auth/oauth/cloudflare/callback")
-async def cf_callback(code: str, state: str, error: str | None = None) -> RedirectResponse:
-    if error or state not in _oauth_states:
-        return RedirectResponse("/?oauth=error")
+async def cf_callback(request: Request) -> RedirectResponse:
+    params = request.query_params
+    error = params.get("error")
+    code = params.get("code")
+    state = params.get("state", "")
+
+    if error or not code:
+        _oauth_states.pop(state, None)
+        print(f"CF OAuth denied: error={error!r} code={bool(code)} state={state}", flush=True)
+        return RedirectResponse(f"/?oauth=error&e={error or 'no_code'}")
+    if state not in _oauth_states:
+        print(f"CF OAuth bad state: {state!r}", flush=True)
+        return RedirectResponse("/?oauth=error&e=bad_state")
     _oauth_states.pop(state, None)
     try:
         async with httpx.AsyncClient() as client:

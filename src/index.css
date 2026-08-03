@@ -738,6 +738,14 @@ textarea {
   border-color: var(--text-muted);
 }
 
+.landing-error {
+  font-size: 13px;
+  color: var(--danger);
+  margin-top: 16px;
+  max-width: 340px;
+  text-align: center;
+}
+
 .chat {
   flex: 1;
   display: flex;
