@@ -1,4 +1,3 @@
-import asyncio
 import json
 import os
 import secrets
@@ -53,6 +52,10 @@ CF_OAUTH_TOKEN_URL = os.getenv(
     "CF_OAUTH_TOKEN_URL", "https://dash.cloudflare.com/oauth2/token"
 )
 CF_API_BASE = "https://api.cloudflare.com/client/v4"
+
+# Currents News API (https://currentsapi.services) — free tier web search.
+CURRENTS_API_KEY = os.getenv("CURRENTS_API_KEY", "")
+CURRENTS_API_BASE = "https://api.currentsapi.services/v1"
 
 # Frontend model ids (Sidebar MODELS) -> Workers AI / AI Gateway model ids.
 CF_MODEL_MAP = {
@@ -429,20 +432,33 @@ async def _classify_search(username: str, text: str) -> tuple[bool, str]:
     return await _ollama_classify_search(resolve_model(SEARCH_CLASSIFIER_MODEL), text)
 
 
-def _ddg_search(query: str, max_results: int = 5) -> list[dict]:
+async def _currents_search(query: str, max_results: int = 5) -> list[dict]:
+    if not CURRENTS_API_KEY:
+        return []
+    headers = {"Authorization": CURRENTS_API_KEY}
+    params = {"keywords": query, "language": "en", "apiKey": CURRENTS_API_KEY}
     try:
-        from ddgs import DDGS
-
-        results = DDGS().text(query, max_results=max_results)
+        async with httpx.AsyncClient(timeout=20) as client:
+            res = await client.get(
+                f"{CURRENTS_API_BASE}/search", params=params, headers=headers
+            )
+            if res.status_code != 200:
+                return []
+            data = res.json()
     except Exception:
         return []
     out: list[dict] = []
-    for r in results or []:
-        title = str(r.get("title") or "").strip()
-        url = str(r.get("href") or "").strip()
-        snippet = str(r.get("body") or "").strip()
+    for n in (data.get("news") or [])[:max_results]:
+        title = str(n.get("title") or "").strip()
+        url = str(n.get("url") or "").strip()
         if title and url:
-            out.append({"title": title, "url": url, "snippet": snippet[:300]})
+            out.append(
+                {
+                    "title": title,
+                    "url": url,
+                    "snippet": str(n.get("description") or "").strip()[:300],
+                }
+            )
     return out
 
 
@@ -459,7 +475,7 @@ async def _maybe_web_search(req: ChatRequest, username: str) -> tuple[str | None
     if not needs or not query:
         return None, []
     try:
-        results = await asyncio.to_thread(_ddg_search, query)
+        results = await _currents_search(query)
     except Exception:
         return None, []
     if not results:
