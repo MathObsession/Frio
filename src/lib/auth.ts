@@ -25,35 +25,18 @@ export function authHeaders(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-export async function login(username: string, password: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
-  });
-  if (!res.ok) {
-    let detail = 'Invalid username or password';
-    try {
-      const body = (await res.json()) as { detail?: string };
-      if (body.detail) detail = body.detail;
-    } catch {
-      /* ignore */
-    }
-    throw new Error(detail);
-  }
-  const data = (await res.json()) as { token: string };
-  setToken(data.token);
-  localStorage.setItem(USERNAME_KEY, username.trim());
+export function startCloudflareOAuth(): void {
+  window.location.assign(`${API_BASE}/api/auth/oauth/cloudflare/authorize`);
 }
 
-export async function register(username: string, password: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/auth/register`, {
+export async function exchangeOAuthCode(code: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/auth/oauth/exchange`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ code }),
   });
   if (!res.ok) {
-    let detail = 'Registration failed';
+    let detail = 'OAuth exchange failed';
     try {
       const body = (await res.json()) as { detail?: string };
       if (body.detail) detail = body.detail;
@@ -62,9 +45,9 @@ export async function register(username: string, password: string): Promise<void
     }
     throw new Error(detail);
   }
-  const data = (await res.json()) as { token: string };
+  const data = (await res.json()) as { token: string; username: string };
   setToken(data.token);
-  localStorage.setItem(USERNAME_KEY, username);
+  localStorage.setItem(USERNAME_KEY, data.username);
 }
 
 export async function checkAuth(): Promise<boolean> {

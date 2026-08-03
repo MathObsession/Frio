@@ -14,7 +14,7 @@ export interface Attachment {
 
 export interface ChatMessage {
   id: string;
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'system';
   content: string;
   attachments?: Attachment[];
   /** base64 payloads passed through to Ollama's `images` field */

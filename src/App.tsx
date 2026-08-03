@@ -3,7 +3,7 @@ import { ChevronDown, LogOut } from 'lucide-react';
 import type { Attachment, ChatMessage, Conversation } from './types';
 import { DEFAULT_MODEL, fetchModels, streamChat } from './lib/ollama';
 import { loadConversations, saveConversations, uid } from './lib/storage';
-import { checkAuth, logout } from './lib/auth';
+import { checkAuth, exchangeOAuthCode, logout, startCloudflareOAuth } from './lib/auth';
 import {
   DEFAULT_SETTINGS,
   loadSettings,
@@ -15,14 +15,12 @@ import { ChatView } from './components/ChatView';
 import { EmptyState } from './components/EmptyState';
 import { Composer } from './components/Composer';
 import { Landing } from './components/Landing';
-import { Login } from './components/Login';
-import { Signup } from './components/Signup';
 import { Logo } from './components/Logo';
 import { Settings } from './components/Settings';
 
 const SYSTEM_PROMPT: ChatMessage = {
   id: 'system',
-  role: 'assistant',
+  role: 'system',
   content: [
     'You are Frio, a bold, sharp and friendly AI assistant.',
     'You answer clearly, concisely and with a bit of personality.',
@@ -41,7 +39,7 @@ function systemMessages(settings: UserSettings): ChatMessage[] {
     SYSTEM_PROMPT,
     {
       id: 'system-personality',
-      role: 'assistant',
+      role: 'system',
       content: `Personality and style instructions from the user:\n${personality}`,
       createdAt: 0,
     },
@@ -57,7 +55,6 @@ function findLastUserIndex(messages: ChatMessage[]): number {
 
 export default function App() {
   const [authState, setAuthState] = useState<'loading' | 'authed' | 'guest'>('loading');
-  const [authPage, setAuthPage] = useState<'landing' | 'signin' | 'signup'>('landing');
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [model, setModel] = useState<string>(DEFAULT_MODEL);
@@ -74,6 +71,28 @@ export default function App() {
   const hydratedRef = useRef(false);
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const oauth = params.get('oauth');
+    const code = params.get('code');
+    if (oauth === '1' && code) {
+      exchangeOAuthCode(code)
+        .then(() => setAuthState('authed'))
+        .catch(() => setAuthState('guest'))
+        .finally(() => {
+          const url = new URL(window.location.href);
+          url.searchParams.delete('oauth');
+          url.searchParams.delete('code');
+          window.history.replaceState({}, '', url.toString());
+        });
+      return;
+    }
+    if (oauth === 'error') {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('oauth');
+      window.history.replaceState({}, '', url.toString());
+      setAuthState('guest');
+      return;
+    }
     void checkAuth().then((ok) => setAuthState(ok ? 'authed' : 'guest'));
   }, []);
 
@@ -110,7 +129,6 @@ export default function App() {
     void logout().then(() => {
       setConversations([]);
       setAuthState('guest');
-      setAuthPage('landing');
       setActiveId(null);
     });
   };
@@ -481,30 +499,7 @@ export default function App() {
   }
 
   if (authState === 'guest') {
-    if (authPage === 'signin') {
-      return (
-        <Login
-          onBack={() => setAuthPage('landing')}
-          onSwitch={() => setAuthPage('signup')}
-          onSuccess={() => setAuthState('authed')}
-        />
-      );
-    }
-    if (authPage === 'signup') {
-      return (
-        <Signup
-          onBack={() => setAuthPage('landing')}
-          onSwitch={() => setAuthPage('signin')}
-          onSuccess={() => setAuthState('authed')}
-        />
-      );
-    }
-    return (
-      <Landing
-        onSignIn={() => setAuthPage('signin')}
-        onSignUp={() => setAuthPage('signup')}
-      />
-    );
+    return <Landing onOAuth={startCloudflareOAuth} />;
   }
 
   return (

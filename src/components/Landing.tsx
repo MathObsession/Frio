@@ -1,12 +1,6 @@
 import { Logo } from './Logo';
 
-export function Landing({
-  onSignIn,
-  onSignUp,
-}: {
-  onSignIn: () => void;
-  onSignUp: () => void;
-}) {
+export function Landing({ onOAuth }: { onOAuth: () => void }) {
   return (
     <div className="landing">
       <div className="landing-inner">
@@ -20,8 +14,8 @@ export function Landing({
           ready to talk.
         </h1>
         <p className="landing-desc">
-          A calm, focused space for thoughtful conversation. Stream from your
-          favorite models, and share images and files.
+          A calm, focused space for thoughtful conversation. Sign in with your
+          Cloudflare account to stream from your own Workers AI models.
         </p>
         <div className="landing-features">
           <span className="landing-chip">Chat</span>
@@ -29,11 +23,8 @@ export function Landing({
           <span className="landing-chip">Files</span>
         </div>
         <div className="landing-actions">
-          <button className="landing-btn landing-btn-primary" onClick={onSignIn}>
-            Sign in
-          </button>
-          <button className="landing-btn landing-btn-ghost" onClick={onSignUp}>
-            Sign up
+          <button className="landing-btn landing-btn-primary" onClick={onOAuth}>
+            Continue with Cloudflare
           </button>
         </div>
       </div>

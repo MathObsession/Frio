@@ -1,15 +1,15 @@
-import hashlib
 import json
 import os
 import secrets
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 
 def _load_dotenv(path: str) -> None:
@@ -27,17 +27,44 @@ def _load_dotenv(path: str) -> None:
 
 _load_dotenv(str(Path(__file__).parent / ".env"))
 
+# Ollama / ollama.com fallback (used when a user has no Cloudflare session).
 OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "")
 if os.getenv("OLLAMA_URL"):
     OLLAMA_URL = os.getenv("OLLAMA_URL", "")
 else:
     OLLAMA_URL = "https://ollama.com" if OLLAMA_API_KEY else "http://localhost:11434"
-AUTH_USERNAME = os.getenv("AUTH_USERNAME", "frio")
-AUTH_PASSWORD = os.getenv("AUTH_PASSWORD", "frio")
-TOKEN_TTL = 60 * 60 * 24
-USERS_FILE = Path(__file__).parent / "users.json"
+
+# Cloudflare OAuth (private client: users who are members of the owner's
+# Cloudflare account). All of these are optional; if unset, /api/chat falls
+# back to the Ollama path for every user.
+CF_OAUTH_CLIENT_ID = os.getenv("CF_OAUTH_CLIENT_ID", "")
+CF_OAUTH_CLIENT_SECRET = os.getenv("CF_OAUTH_CLIENT_SECRET", "")
+CF_OAUTH_REDIRECT_URI = os.getenv("CF_OAUTH_REDIRECT_URI", "")
+CF_OAUTH_SCOPES = os.getenv("CF_OAUTH_SCOPES", "workers-ai.run account.read user.read")
+CF_OAUTH_AUTH_URL = os.getenv(
+    "CF_OAUTH_AUTH_URL", "https://dash.cloudflare.com/oauth2/auth"
+)
+CF_OAUTH_TOKEN_URL = os.getenv(
+    "CF_OAUTH_TOKEN_URL", "https://dash.cloudflare.com/oauth2/token"
+)
+CF_API_BASE = "https://api.cloudflare.com/client/v4"
+
+# Frontend model ids (Sidebar MODELS) -> Workers AI model ids. Overridable.
+CF_MODEL_MAP = {
+    "gemma4:31b-cloud": os.getenv("CF_MODEL_LITE", "@cf/meta/llama-3.1-8b-instruct"),
+    "nemotron-3-super:cloud": os.getenv(
+        "CF_MODEL_PRO", "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+    ),
+    "minimax-m3:cloud": os.getenv("CF_MODEL_MAX", "@cf/qwen/qwen3-32b-instruct"),
+}
+CF_MODEL_DEFAULT = CF_MODEL_MAP.get("nemotron-3-super:cloud")
+
+TOKEN_TTL = 60 * 60 * 24  # app session lifetime
 
 _tokens: dict[str, dict] = {}
+_cf_grants: dict[str, dict] = {}
+_oauth_states: dict[str, float] = {}
+_oauth_codes: dict[str, dict] = {}
 
 
 def ollama_headers() -> dict[str, str]:
@@ -52,6 +79,11 @@ def resolve_model(name: str) -> str:
     if name.endswith("-cloud"):
         return name[: -len("-cloud")]
     return name
+
+
+def _cf_configured() -> bool:
+    return bool(CF_OAUTH_CLIENT_ID and CF_OAUTH_CLIENT_SECRET and CF_OAUTH_REDIRECT_URI)
+
 
 app = FastAPI(title="Frio backend")
 
@@ -75,58 +107,8 @@ class ChatRequest(BaseModel):
     options: dict[str, Any] | None = None
 
 
-class LoginRequest(BaseModel):
-    username: str
-    password: str
-
-
-class RegisterRequest(BaseModel):
-    username: str
-    password: str
-
-
-def _make_record(password: str) -> str:
-    salt = secrets.token_hex(16)
-    dk = hashlib.pbkdf2_hmac(
-        "sha256", password.encode(), bytes.fromhex(salt), 100_000
-    )
-    return f"{salt}${dk.hex()}"
-
-
-def _verify(password: str, record: str) -> bool:
-    try:
-        salt, expected = record.split("$", 1)
-        dk = hashlib.pbkdf2_hmac(
-            "sha256", password.encode(), bytes.fromhex(salt), 100_000
-        )
-        return secrets.compare_digest(dk.hex(), expected)
-    except Exception:
-        return False
-
-
-def load_users() -> dict[str, str]:
-    try:
-        if USERS_FILE.exists():
-            data = json.loads(USERS_FILE.read_text())
-            if isinstance(data, dict):
-                return data
-    except Exception:
-        pass
-    return {}
-
-
-def save_users(users: dict[str, str]) -> None:
-    USERS_FILE.write_text(json.dumps(users, indent=2))
-
-
-def ensure_admin() -> None:
-    users = load_users()
-    if AUTH_USERNAME and AUTH_USERNAME not in users:
-        users[AUTH_USERNAME] = _make_record(AUTH_PASSWORD)
-        save_users(users)
-
-
-ensure_admin()
+class OAuthExchangeRequest(BaseModel):
+    code: str
 
 
 def _issue_token(username: str) -> str:
@@ -151,29 +133,101 @@ def require_auth(authorization: str | None = Header(default=None)) -> str:
     return info["username"]
 
 
-@app.post("/api/auth/login")
-def login(req: LoginRequest) -> dict:
-    users = load_users()
-    record = users.get(req.username.strip())
-    if record is None or not _verify(req.password, record):
-        raise HTTPException(status_code=401, detail="Invalid username or password")
-    return {"token": _issue_token(req.username)}
+# ---------------------------------------------------------------------------
+# Cloudflare OAuth
+# ---------------------------------------------------------------------------
+
+@app.get("/api/auth/oauth/cloudflare/authorize")
+async def cf_authorize() -> RedirectResponse:
+    if not _cf_configured():
+        raise HTTPException(
+            status_code=400,
+            detail="Cloudflare OAuth is not configured",
+        )
+    state = secrets.token_hex(16)
+    _oauth_states[state] = time.time() + 600
+    params = urlencode(
+        {
+            "response_type": "code",
+            "client_id": CF_OAUTH_CLIENT_ID,
+            "redirect_uri": CF_OAUTH_REDIRECT_URI,
+            "scope": CF_OAUTH_SCOPES,
+            "state": state,
+        }
+    )
+    return RedirectResponse(f"{CF_OAUTH_AUTH_URL}?{params}")
 
 
-@app.post("/api/auth/register")
-def register(req: RegisterRequest) -> dict:
-    username = req.username.strip()
-    password = req.password
-    if not (3 <= len(username) <= 32):
-        raise HTTPException(status_code=400, detail="Username must be 3-32 characters")
-    if len(password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
-    users = load_users()
-    if username in users:
-        raise HTTPException(status_code=400, detail="Username already taken")
-    users[username] = _make_record(password)
-    save_users(users)
-    return {"token": _issue_token(username)}
+@app.get("/api/auth/oauth/cloudflare/callback")
+async def cf_callback(code: str, state: str, error: str | None = None) -> RedirectResponse:
+    if error or state not in _oauth_states:
+        return RedirectResponse("/?oauth=error")
+    _oauth_states.pop(state, None)
+    try:
+        async with httpx.AsyncClient() as client:
+            token_res = await client.post(
+                CF_OAUTH_TOKEN_URL,
+                data={
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "redirect_uri": CF_OAUTH_REDIRECT_URI,
+                },
+                auth=(CF_OAUTH_CLIENT_ID, CF_OAUTH_CLIENT_SECRET),
+            )
+            if token_res.status_code != 200:
+                return RedirectResponse("/?oauth=error")
+            tok = token_res.json()
+            access = tok["access_token"]
+            refresh = tok.get("refresh_token", "")
+            expires_in = int(tok.get("expires_in", 3600))
+
+            ui = await client.get(
+                "https://dash.cloudflare.com/oauth2/userinfo",
+                headers={"Authorization": f"Bearer {access}"},
+            )
+            email = ui.json().get("email") if ui.status_code == 200 else None
+
+            acc = await client.get(
+                f"{CF_API_BASE}/accounts",
+                headers={"Authorization": f"Bearer {access}"},
+            )
+            account_id = None
+            if acc.status_code == 200:
+                result = (acc.json().get("result") or [])
+                if result:
+                    account_id = result[0].get("id")
+
+        if email:
+            username = email
+        elif account_id:
+            username = f"cf-{account_id}"
+        else:
+            username = f"cf-{secrets.token_hex(4)}"
+
+        _cf_grants[username] = {
+            "access_token": access,
+            "refresh_token": refresh,
+            "account_id": account_id,
+            "exp": time.time() + max(expires_in - 60, 60),
+        }
+        app_token = _issue_token(username)
+        one_time = secrets.token_urlsafe(16)
+        _oauth_codes[one_time] = {
+            "token": app_token,
+            "username": username,
+            "exp": time.time() + 120,
+        }
+        return RedirectResponse(f"/?oauth=1&code={one_time}")
+    except Exception:
+        return RedirectResponse("/?oauth=error")
+
+
+@app.post("/api/auth/oauth/exchange")
+async def oauth_exchange(req: OAuthExchangeRequest) -> dict:
+    info = _oauth_codes.pop(req.code, None)
+    if info is None or info["exp"] < time.time():
+        raise HTTPException(status_code=400, detail="Invalid or expired OAuth code")
+    return {"token": info["token"], "username": info["username"]}
 
 
 @app.post("/api/auth/logout")
@@ -193,41 +247,112 @@ def check_auth(_: str = Depends(require_auth)) -> dict:
     return {"ok": True}
 
 
+# ---------------------------------------------------------------------------
+# Workers AI helpers
+# ---------------------------------------------------------------------------
+
+async def _cf_access_token(username: str) -> str | None:
+    grant = _cf_grants.get(username)
+    if not grant or not grant.get("account_id"):
+        return None
+    if grant["exp"] > time.time():
+        return grant["access_token"]
+    if not grant.get("refresh_token"):
+        return None
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.post(
+                CF_OAUTH_TOKEN_URL,
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": grant["refresh_token"],
+                },
+                auth=(CF_OAUTH_CLIENT_ID, CF_OAUTH_CLIENT_SECRET),
+            )
+            if res.status_code != 200:
+                _cf_grants.pop(username, None)
+                return None
+            tok = res.json()
+        grant["access_token"] = tok["access_token"]
+        if tok.get("refresh_token"):
+            grant["refresh_token"] = tok["refresh_token"]
+        grant["exp"] = time.time() + max(int(tok.get("expires_in", 3600)) - 60, 60)
+        return grant["access_token"]
+    except Exception:
+        return None
+
+
+def _to_openai_messages(messages: list[ChatMessage]) -> list[dict]:
+    out: list[dict] = []
+    for m in messages:
+        if m.images:
+            content: list[dict] = [{"type": "text", "text": m.content or ""}]
+            for img in m.images:
+                data_url = img if img.startswith("data:") else f"data:image/jpeg;base64,{img}"
+                content.append({"type": "image_url", "image_url": {"url": data_url}})
+            out.append({"role": m.role, "content": content})
+        else:
+            out.append({"role": m.role, "content": m.content})
+    return out
+
+
 def sse(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
-@app.get("/api/health")
-async def health() -> dict:
-    try:
-        async with httpx.AsyncClient(timeout=5, headers=ollama_headers()) as client:
-            r = await client.get(f"{OLLAMA_URL}/api/version")
-            if r.status_code == 200:
-                return {"ok": True, "ollama": True}
-            if OLLAMA_API_KEY:
-                r2 = await client.get(f"{OLLAMA_URL}/api/tags")
-                return {"ok": True, "ollama": r2.status_code == 200}
-            return {"ok": True, "ollama": False}
-    except Exception:
-        return {"ok": True, "ollama": False}
+async def _chat_workers_ai(req: ChatRequest, username: str) -> StreamingResponse:
+    grant = _cf_grants.get(username)
+    account_id = grant["account_id"]
+    access = grant["access_token"]
+    model = CF_MODEL_MAP.get(req.model) or CF_MODEL_DEFAULT
+    payload = {
+        "model": model,
+        "messages": _to_openai_messages(req.messages),
+        "stream": True,
+    }
+    url = f"{CF_API_BASE}/accounts/{account_id}/ai/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {access}", "Content-Type": "application/json"}
+
+    async def event_stream():
+        async with httpx.AsyncClient(timeout=None, headers=headers) as client:
+            async with client.stream("POST", url, json=payload) as upstream:
+                if upstream.status_code != 200:
+                    body = (await upstream.aread()).decode("utf-8", errors="replace")
+                    yield sse(
+                        {"error": body[:400] or f"Workers AI error {upstream.status_code}"}
+                    )
+                    return
+                async for line in upstream.aiter_lines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith("data:"):
+                        line = line[5:].strip()
+                    if line == "[DONE]":
+                        yield sse({"done": True})
+                        return
+                    try:
+                        chunk = json.loads(line)
+                    except Exception:
+                        continue
+                    choice = (chunk.get("choices") or [{}])[0]
+                    delta = choice.get("delta") or {}
+                    text = delta.get("content") or (choice.get("message") or {}).get("content")
+                    if text:
+                        yield sse({"content": text})
+                    if chunk.get("done") or choice.get("finish_reason") or chunk.get("stop_reason"):
+                        yield sse({"done": True})
+                        return
+        yield sse({"done": True})
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
-@app.get("/api/models")
-async def models(_: str = Depends(require_auth)) -> dict:
-    try:
-        async with httpx.AsyncClient(timeout=10, headers=ollama_headers()) as client:
-            r = await client.get(f"{OLLAMA_URL}/api/tags")
-            r.raise_for_status()
-            data = r.json()
-            return {"models": data.get("models", [])}
-    except Exception:
-        return {"models": []}
-
-
-@app.post("/api/chat")
-async def chat(
-    req: ChatRequest, _: str = Depends(require_auth)
-) -> StreamingResponse:
+def _chat_ollama(req: ChatRequest) -> StreamingResponse:
     payload = {
         "model": resolve_model(req.model),
         "messages": [m.model_dump(exclude_none=True) for m in req.messages],
@@ -271,6 +396,53 @@ async def chat(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ---------------------------------------------------------------------------
+# Public / app endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/health")
+async def health() -> dict:
+    try:
+        async with httpx.AsyncClient(timeout=5, headers=ollama_headers()) as client:
+            r = await client.get(f"{OLLAMA_URL}/api/version")
+            if r.status_code == 200:
+                return {"ok": True, "ollama": True, "cf": _cf_configured()}
+            if OLLAMA_API_KEY:
+                r2 = await client.get(f"{OLLAMA_URL}/api/tags")
+                return {"ok": True, "ollama": r2.status_code == 200, "cf": _cf_configured()}
+            return {"ok": True, "ollama": False, "cf": _cf_configured()}
+    except Exception:
+        return {"ok": True, "ollama": False, "cf": _cf_configured()}
+
+
+@app.get("/api/models")
+async def models(username: str = Depends(require_auth)) -> dict:
+    if await _cf_access_token(username) and _cf_grants.get(username, {}).get("account_id"):
+        return {
+            "models": [
+                {"name": name, "model": name, "provider": "workers-ai"}
+                for name in CF_MODEL_MAP
+            ]
+        }
+    try:
+        async with httpx.AsyncClient(timeout=10, headers=ollama_headers()) as client:
+            r = await client.get(f"{OLLAMA_URL}/api/tags")
+            r.raise_for_status()
+            data = r.json()
+            return {"models": data.get("models", [])}
+    except Exception:
+        return {"models": []}
+
+
+@app.post("/api/chat")
+async def chat(
+    req: ChatRequest, username: str = Depends(require_auth)
+) -> StreamingResponse:
+    if await _cf_access_token(username):
+        return await _chat_workers_ai(req, username)
+    return _chat_ollama(req)
 
 
 DIST_DIR = Path(__file__).resolve().parent.parent / "dist"
