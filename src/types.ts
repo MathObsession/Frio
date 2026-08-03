@@ -23,6 +23,8 @@ export interface ChatMessage {
   history?: string[];
   /** assistant response that followed each entry in `history` (parallel array) */
   responses?: string[];
+  /** backend that produced this message: Cloudflare Workers AI or Ollama */
+  provider?: 'cloudflare' | 'ollama';
   createdAt: number;
   error?: boolean;
   streaming?: boolean;

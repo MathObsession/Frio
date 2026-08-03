@@ -25,7 +25,7 @@ export interface StreamChatOptions {
   think: boolean;
   signal: AbortSignal;
   onDelta: (text: string) => void;
-  onDone: (fullText: string) => void;
+  onDone: (fullText: string, provider?: 'cloudflare' | 'ollama') => void;
   onThinking?: (text: string) => void;
 }
 
@@ -85,6 +85,7 @@ export async function streamChat({
   const decoder = new TextDecoder();
   let buffer = '';
   let fullText = '';
+  let provider: 'cloudflare' | 'ollama' | undefined;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -99,13 +100,20 @@ export async function streamChat({
       if (!trimmed || !trimmed.startsWith('data:')) continue;
       const jsonText = trimmed.slice(5).trim();
       if (!jsonText) continue;
-      let chunk: { content?: string; thinking?: string; done?: boolean; error?: string };
+      let chunk: {
+        content?: string;
+        thinking?: string;
+        done?: boolean;
+        error?: string;
+        provider?: 'cloudflare' | 'ollama';
+      };
       try {
         chunk = JSON.parse(jsonText);
       } catch {
         continue;
       }
       if (chunk.error) throw new Error(chunk.error);
+      if (chunk.provider) provider = chunk.provider;
       if (chunk.thinking && onThinking) {
         onThinking(chunk.thinking);
       }
@@ -115,10 +123,10 @@ export async function streamChat({
         onDelta(piece);
       }
       if (chunk.done) {
-        onDone(fullText);
+        onDone(fullText, provider);
         return;
       }
     }
   }
-  onDone(fullText);
+  onDone(fullText, provider);
 }

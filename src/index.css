@@ -915,6 +915,28 @@ textarea {
   color: var(--text-muted);
 }
 
+.msg-provider {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  opacity: 0.9;
+}
+
+.msg-provider-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.msg-provider-dot.cloudflare {
+  background: var(--accent);
+}
+
+.msg-provider-dot.ollama {
+  background: var(--text-muted);
+}
+
 .msg.user .msg-meta {
   flex-direction: row-reverse;
 }

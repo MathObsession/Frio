@@ -349,7 +349,7 @@ async def _chat_workers_ai(req: ChatRequest, username: str) -> StreamingResponse
                     if line.startswith("data:"):
                         line = line[5:].strip()
                     if line == "[DONE]":
-                        yield sse({"done": True})
+                        yield sse({"done": True, "provider": "cloudflare"})
                         return
                     try:
                         chunk = json.loads(line)
@@ -361,9 +361,9 @@ async def _chat_workers_ai(req: ChatRequest, username: str) -> StreamingResponse
                     if text:
                         yield sse({"content": text})
                     if chunk.get("done") or choice.get("finish_reason") or chunk.get("stop_reason"):
-                        yield sse({"done": True})
+                        yield sse({"done": True, "provider": "cloudflare"})
                         return
-        yield sse({"done": True})
+        yield sse({"done": True, "provider": "cloudflare"})
 
     return StreamingResponse(
         event_stream(),
@@ -408,7 +408,7 @@ def _chat_ollama(req: ChatRequest) -> StreamingResponse:
                     if thinking:
                         yield sse({"thinking": thinking})
                     if chunk.get("done"):
-                        yield sse({"done": True})
+                        yield sse({"done": True, "provider": "ollama"})
                         return
 
     return StreamingResponse(

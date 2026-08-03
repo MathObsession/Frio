@@ -181,6 +181,12 @@ export function MessageBubble({
         )}
         <div className="msg-meta">
           <span>{formatTime(message.createdAt)}</span>
+          {message.role === 'assistant' && message.provider && (
+            <span className="msg-provider" title="Model served by this provider">
+              <span className={`msg-provider-dot ${message.provider}`} />
+              Answered by {message.provider === 'cloudflare' ? 'Cloudflare' : 'Ollama'}
+            </span>
+          )}
           {message.role === 'user' && !editing && (
             <span className="msg-actions">
               <button className="icon-btn" onClick={startEdit} title="Edit">

@@ -225,8 +225,19 @@ export default function App() {
               ),
             );
           },
-          onDone: () => {
-            /* placeholder */
+          onDone: (_, provider) => {
+            setConversations((prev) =>
+              prev.map((c) =>
+                c.id === convId
+                  ? {
+                      ...c,
+                      messages: c.messages.map((m) =>
+                        m.id === assistantId ? { ...m, provider } : m,
+                      ),
+                    }
+                  : c,
+              ),
+            );
           },
         });
         setConversations((prev) =>
