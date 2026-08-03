@@ -41,9 +41,9 @@ CF_OAUTH_CLIENT_ID = os.getenv("CF_OAUTH_CLIENT_ID", "")
 CF_OAUTH_CLIENT_SECRET = os.getenv("CF_OAUTH_CLIENT_SECRET", "")
 CF_OAUTH_REDIRECT_URI = os.getenv("CF_OAUTH_REDIRECT_URI", "")
 # Must be a subset of the scopes configured on the OAuth client.
-CF_OAUTH_SCOPES = os.getenv("CF_OAUTH_SCOPES", "account.read user.read ai.read")
-# Optional fallback for the account that hosts Workers AI (only needed when the
-# client lacks account.read).
+CF_OAUTH_SCOPES = os.getenv("CF_OAUTH_SCOPES", "ai.read")
+# The account that hosts Workers AI. Required when the client lacks account.read
+# (the app can't list accounts to find the id itself).
 CF_ACCOUNT_ID = os.getenv("CF_ACCOUNT_ID", "")
 CF_OAUTH_AUTH_URL = os.getenv(
     "CF_OAUTH_AUTH_URL", "https://dash.cloudflare.com/oauth2/auth"
@@ -199,7 +199,9 @@ async def cf_callback(request: Request) -> RedirectResponse:
                 "https://dash.cloudflare.com/oauth2/userinfo",
                 headers={"Authorization": f"Bearer {access}"},
             )
-            email = ui.json().get("email") if ui.status_code == 200 else None
+            ui_data = ui.json() if ui.status_code == 200 else {}
+            email = ui_data.get("email")
+            sub = ui_data.get("sub")
 
             acc = await client.get(
                 f"{CF_API_BASE}/accounts",
@@ -215,6 +217,8 @@ async def cf_callback(request: Request) -> RedirectResponse:
 
         if email:
             username = email
+        elif sub:
+            username = f"cf-{sub}"
         elif account_id:
             username = f"cf-{account_id}"
         else:
