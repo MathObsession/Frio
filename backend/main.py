@@ -76,12 +76,6 @@ def ollama_headers() -> dict[str, str]:
 
 
 def resolve_model(name: str) -> str:
-    if not OLLAMA_API_KEY:
-        return name
-    if name.endswith(":cloud"):
-        return name[: -len(":cloud")]
-    if name.endswith("-cloud"):
-        return name[: -len("-cloud")]
     return name
 
 
